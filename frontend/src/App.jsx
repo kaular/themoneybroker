@@ -7,6 +7,8 @@ import Strategies from './pages/Strategies';
 import Orders from './pages/Orders';
 import Settings from './pages/Settings';
 import TradeHistory from './pages/TradeHistory';
+import GrowthScanner from './pages/GrowthScanner';
+import HybridPortfolio from './pages/HybridPortfolio';
 import api from './services/api';
 import wsService from './services/websocket';
 
@@ -95,6 +97,8 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard accountData={accountData} />} />
+          <Route path="/scanner" element={<GrowthScanner />} />
+          <Route path="/portfolio" element={<HybridPortfolio />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="/strategies" element={<Strategies />} />
           <Route path="/orders" element={<Orders />} />

@@ -20,6 +20,8 @@ from src.utils import config, setup_logger
 from src.database import init_db, get_db
 from src.database.models import Trade, Strategy, PerformanceMetric
 from src.database.trade_tracker import save_trade, update_trade_status
+from src.scanners import GrowthStockScanner
+from src.portfolio import HybridPortfolio
 
 # Logger
 logger = setup_logger("API", config.LOG_LEVEL)
@@ -59,6 +61,7 @@ class BotState:
         self.risk_manager: Optional[RiskManager] = None
         self.stop_loss_manager: Optional[StopLossManager] = None
         self.execution_engine: Optional[ExecutionEngine] = None
+        self.portfolio_manager: Optional[HybridPortfolio] = None
         self.strategies: List = []
         self.is_running = False
         self.connected = False
@@ -674,6 +677,342 @@ async def get_all_stops():
             ]
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# GROWTH STOCK SCANNER ENDPOINTS
+# ============================================================================
+
+@app.get("/scanner/scan")
+async def scan_growth_stocks(
+    min_score: float = 60.0,
+    max_results: int = 20,
+    symbols: Optional[str] = None  # Comma-separated list
+):
+    """
+    Scannt nach Growth Stocks mit hohem Potenzial
+    
+    Parameters:
+    - min_score: Minimaler Growth Score (0-100)
+    - max_results: Maximale Anzahl Ergebnisse
+    - symbols: Optional - spezifische Symbole (komma-getrennt)
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        # Erstelle Scanner
+        scanner = GrowthStockScanner(bot_state.broker)
+        
+        # Parse Symbole
+        symbol_list = None
+        if symbols:
+            symbol_list = [s.strip().upper() for s in symbols.split(',')]
+        
+        # Führe Scan aus
+        results = await scanner.scan_universe(
+            symbols=symbol_list,
+            min_score=min_score
+        )
+        
+        # Limitiere Ergebnisse
+        top_picks = scanner.get_top_picks(results, count=max_results)
+        
+        return {
+            "scan_time": datetime.now(UTC).isoformat(),
+            "total_scanned": len(symbol_list) if symbol_list else "universe",
+            "matches_found": len(results),
+            "results": [
+                {
+                    "symbol": stock.symbol,
+                    "score": stock.score,
+                    "revenue_growth": stock.revenue_growth,
+                    "relative_strength": stock.relative_strength,
+                    "momentum_score": stock.momentum_score,
+                    "volume_increase": stock.volume_increase,
+                    "price_change_30d": stock.price_change_30d,
+                    "sector": stock.sector,
+                    "market_cap": stock.market_cap,
+                    "reason": stock.reason
+                }
+                for stock in top_picks
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Scanner error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scanner/report")
+async def get_scanner_report(
+    min_score: float = 70.0,
+    symbols: Optional[str] = None
+):
+    """
+    Generiert einen formatierten Scan-Report
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        scanner = GrowthStockScanner(bot_state.broker)
+        
+        symbol_list = None
+        if symbols:
+            symbol_list = [s.strip().upper() for s in symbols.split(',')]
+        
+        results = await scanner.scan_universe(
+            symbols=symbol_list,
+            min_score=min_score
+        )
+        
+        report = scanner.format_report(results)
+        
+        return {
+            "report": report,
+            "results_count": len(results)
+        }
+    
+    except Exception as e:
+        logger.error(f"Report generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scanner/top-picks/{count}")
+async def get_top_picks(count: int = 10, min_score: float = 65.0):
+    """
+    Holt die Top N Growth Stock Picks
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        scanner = GrowthStockScanner(bot_state.broker)
+        results = await scanner.scan_universe(min_score=min_score)
+        top_picks = scanner.get_top_picks(results, count=count)
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "count": len(top_picks),
+            "picks": [
+                {
+                    "rank": i + 1,
+                    "symbol": stock.symbol,
+                    "score": stock.score,
+                    "price_change_30d": stock.price_change_30d,
+                    "relative_strength": stock.relative_strength,
+                    "sector": stock.sector,
+                    "reason": stock.reason
+                }
+                for i, stock in enumerate(top_picks)
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Top picks error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# PORTFOLIO ENDPOINTS (70/30 Core-Satellite)
+# ================================
+
+@app.post("/portfolio/initialize")
+async def initialize_portfolio():
+    """
+    Initialize Hybrid Portfolio Manager
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    if not bot_state.risk_manager:
+        raise HTTPException(status_code=400, detail="Risk Manager not initialized")
+    
+    try:
+        # Create scanner for satellite positions
+        scanner = GrowthStockScanner(bot_state.broker)
+        
+        # Initialize portfolio manager
+        bot_state.portfolio_manager = HybridPortfolio(
+            broker=bot_state.broker,
+            scanner=scanner,
+            risk_manager=bot_state.risk_manager
+        )
+        
+        await bot_state.portfolio_manager.initialize()
+        
+        return {
+            "status": "initialized",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "message": "Hybrid Portfolio Manager initialized successfully"
+        }
+    
+    except Exception as e:
+        logger.error(f"Portfolio initialization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/summary")
+async def get_portfolio_summary():
+    """
+    Get portfolio summary with core/satellite breakdown
+    """
+    if not bot_state.portfolio_manager:
+        raise HTTPException(status_code=400, detail="Portfolio Manager not initialized")
+    
+    try:
+        summary = await bot_state.portfolio_manager.get_portfolio_summary()
+        return summary
+    
+    except Exception as e:
+        logger.error(f"Portfolio summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/positions")
+async def get_portfolio_positions(position_type: Optional[str] = None):
+    """
+    Get portfolio positions (all, core, or satellite)
+    
+    Args:
+        position_type: 'core', 'satellite', or None for all
+    """
+    if not bot_state.portfolio_manager:
+        raise HTTPException(status_code=400, detail="Portfolio Manager not initialized")
+    
+    try:
+        if position_type == 'core':
+            positions = await bot_state.portfolio_manager.get_core_positions()
+        elif position_type == 'satellite':
+            positions = await bot_state.portfolio_manager.get_satellite_positions()
+        else:
+            positions = await bot_state.portfolio_manager.get_all_positions()
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "position_type": position_type or "all",
+            "count": len(positions),
+            "positions": [
+                {
+                    "symbol": p.symbol,
+                    "type": p.portfolio_type.value,
+                    "target_weight": p.target_weight,
+                    "current_weight": p.current_weight,
+                    "current_value": p.current_value,
+                    "shares": p.shares,
+                    "average_entry": p.average_entry,
+                    "unrealized_pnl": p.unrealized_pnl,
+                    "unrealized_pnl_percent": p.unrealized_pnl_percent,
+                    "last_rebalance": p.last_rebalance.isoformat()
+                }
+                for p in positions
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Portfolio positions error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/rebalance/check")
+async def check_rebalancing():
+    """
+    Check if portfolio needs rebalancing
+    """
+    if not bot_state.portfolio_manager:
+        raise HTTPException(status_code=400, detail="Portfolio Manager not initialized")
+    
+    try:
+        needs_rebalancing = await bot_state.portfolio_manager.check_rebalancing_needed()
+        actions = []
+        
+        if needs_rebalancing:
+            actions = await bot_state.portfolio_manager.get_rebalancing_actions()
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "needs_rebalancing": needs_rebalancing,
+            "actions_count": len(actions),
+            "actions": [
+                {
+                    "symbol": a.symbol,
+                    "action": a.action,
+                    "shares": a.shares,
+                    "reason": a.reason,
+                    "urgency": a.urgency
+                }
+                for a in actions
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Rebalancing check error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/rebalance/execute")
+async def execute_rebalancing():
+    """
+    Execute portfolio rebalancing
+    """
+    if not bot_state.portfolio_manager:
+        raise HTTPException(status_code=400, detail="Portfolio Manager not initialized")
+    
+    try:
+        # Get actions
+        actions = await bot_state.portfolio_manager.get_rebalancing_actions()
+        
+        if not actions:
+            return {
+                "status": "no_action_needed",
+                "message": "Portfolio is balanced, no actions required"
+            }
+        
+        # Execute rebalancing
+        results = await bot_state.portfolio_manager.execute_rebalancing(actions)
+        
+        return {
+            "status": "completed",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "total_actions": results['total_actions'],
+            "success_count": len(results['success']),
+            "failed_count": len(results['failed']),
+            "success": results['success'],
+            "failed": results['failed']
+        }
+    
+    except Exception as e:
+        logger.error(f"Rebalancing execution error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/satellite/update")
+async def update_satellite_positions():
+    """
+    Update satellite positions with fresh Growth Scanner picks
+    """
+    if not bot_state.portfolio_manager:
+        raise HTTPException(status_code=400, detail="Portfolio Manager not initialized")
+    
+    try:
+        actions = await bot_state.portfolio_manager.update_satellite_positions()
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "added": actions['added'],
+            "kept": actions['kept'],
+            "removed": actions['removed'],
+            "summary": {
+                "added_count": len(actions['added']),
+                "kept_count": len(actions['kept']),
+                "removed_count": len(actions['removed'])
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"Satellite update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
