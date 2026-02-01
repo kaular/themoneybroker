@@ -22,6 +22,8 @@ from src.database.models import Trade, Strategy, PerformanceMetric
 from src.database.trade_tracker import save_trade, update_trade_status
 from src.scanners import GrowthStockScanner
 from src.portfolio import HybridPortfolio
+from src.backtesting import Backtester, BacktestConfig
+from src.alerts import AlertManager, Alert, AlertType, AlertChannel
 
 # Logger
 logger = setup_logger("API", config.LOG_LEVEL)
@@ -62,6 +64,7 @@ class BotState:
         self.stop_loss_manager: Optional[StopLossManager] = None
         self.execution_engine: Optional[ExecutionEngine] = None
         self.portfolio_manager: Optional[HybridPortfolio] = None
+        self.alert_manager: Optional[AlertManager] = None
         self.strategies: List = []
         self.is_running = False
         self.connected = False
@@ -1013,6 +1016,374 @@ async def update_satellite_positions():
     
     except Exception as e:
         logger.error(f"Satellite update error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# BACKTESTING ENDPOINTS
+# ================================
+
+class BacktestRequest(BaseModel):
+    strategy_type: str  # "sma", "growth_scanner", etc.
+    start_date: str  # ISO format
+    end_date: str
+    initial_capital: float
+    symbols: List[str]
+    parameters: Optional[Dict[str, Any]] = {}
+    commission: float = 0.0
+    slippage: float = 0.001
+    max_positions: int = 5
+    position_size_pct: float = 0.2
+
+
+@app.post("/backtest/run")
+async def run_backtest(request: BacktestRequest):
+    """
+    Run backtest with specified strategy and parameters
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        # Parse dates
+        start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+        end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+        
+        # Create config
+        config = BacktestConfig(
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=request.initial_capital,
+            symbols=request.symbols,
+            commission=request.commission,
+            slippage=request.slippage,
+            max_positions=request.max_positions,
+            position_size_pct=request.position_size_pct
+        )
+        
+        # Create strategy based on type
+        if request.strategy_type == "sma":
+            strategy = SMAStrategy(
+                short_window=request.parameters.get('short_window', 20),
+                long_window=request.parameters.get('long_window', 50)
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy type: {request.strategy_type}")
+        
+        # Run backtest
+        backtester = Backtester(bot_state.broker)
+        result = await backtester.run_backtest(strategy, config)
+        
+        # Format response
+        return {
+            "status": "completed",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "strategy": result.strategy_name,
+            "parameters": result.parameters,
+            "config": {
+                "start_date": config.start_date.isoformat(),
+                "end_date": config.end_date.isoformat(),
+                "initial_capital": config.initial_capital,
+                "symbols": config.symbols
+            },
+            "metrics": result.metrics,
+            "trades_count": len(result.trades),
+            "equity_curve": [
+                {
+                    "date": date.isoformat(),
+                    "value": value
+                }
+                for date, value in zip(result.equity_dates, result.equity_curve)
+            ],
+            "trades": [
+                {
+                    "symbol": t.symbol,
+                    "entry_date": t.entry_date.isoformat(),
+                    "exit_date": t.exit_date.isoformat(),
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "shares": t.shares,
+                    "pnl": t.pnl,
+                    "pnl_percent": t.pnl_percent * 100,
+                    "holding_days": t.holding_days,
+                    "win": t.win
+                }
+                for t in result.trades[:100]  # Limit to first 100 trades
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Backtest error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/backtest/walk-forward")
+async def walk_forward_analysis(request: BacktestRequest, 
+                                window_size_days: int = 90,
+                                step_size_days: int = 30):
+    """
+    Run walk-forward analysis on strategy
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        # Parse dates
+        start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+        end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+        
+        # Create config
+        config = BacktestConfig(
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=request.initial_capital,
+            symbols=request.symbols,
+            commission=request.commission,
+            slippage=request.slippage,
+            max_positions=request.max_positions,
+            position_size_pct=request.position_size_pct
+        )
+        
+        # Create strategy
+        if request.strategy_type == "sma":
+            strategy = SMAStrategy(
+                short_window=request.parameters.get('short_window', 20),
+                long_window=request.parameters.get('long_window', 50)
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy type: {request.strategy_type}")
+        
+        # Run walk-forward
+        backtester = Backtester(bot_state.broker)
+        results = await backtester.walk_forward_analysis(
+            strategy, config, window_size_days, step_size_days
+        )
+        
+        # Format response
+        return {
+            "status": "completed",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "windows_count": len(results),
+            "window_size_days": window_size_days,
+            "step_size_days": step_size_days,
+            "windows": [
+                {
+                    "start_date": r.config.start_date.isoformat(),
+                    "end_date": r.config.end_date.isoformat(),
+                    "total_return": r.metrics['total_return_percent'],
+                    "sharpe_ratio": r.metrics['sharpe_ratio'],
+                    "max_drawdown": r.metrics['max_drawdown_percent'],
+                    "win_rate": r.metrics['win_rate_percent'],
+                    "trades_count": len(r.trades)
+                }
+                for r in results
+            ],
+            "aggregate_metrics": {
+                "avg_return": sum(r.metrics['total_return_percent'] for r in results) / len(results),
+                "avg_sharpe": sum(r.metrics['sharpe_ratio'] for r in results) / len(results),
+                "avg_drawdown": sum(r.metrics['max_drawdown_percent'] for r in results) / len(results),
+                "avg_win_rate": sum(r.metrics['win_rate_percent'] for r in results) / len(results)
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"Walk-forward error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/backtest/presets")
+async def get_backtest_presets():
+    """
+    Get common backtest presets
+    """
+    return {
+        "presets": [
+            {
+                "name": "Growth Scanner Backtest - 1 Year",
+                "strategy_type": "growth_scanner",
+                "start_date": (datetime.now() - timedelta(days=365)).isoformat(),
+                "end_date": datetime.now().isoformat(),
+                "initial_capital": 10000,
+                "symbols": ["PLTR", "IONQ", "ARM", "TSLA", "NVDA", "CRSP", "RKLB", "ASTS", "RGTI", "ASML"],
+                "parameters": {"min_score": 75},
+                "commission": 0,
+                "slippage": 0.001,
+                "max_positions": 5,
+                "position_size_pct": 0.2
+            },
+            {
+                "name": "SMA Strategy - 6 Months",
+                "strategy_type": "sma",
+                "start_date": (datetime.now() - timedelta(days=180)).isoformat(),
+                "end_date": datetime.now().isoformat(),
+                "initial_capital": 10000,
+                "symbols": ["SPY", "QQQ", "IWM"],
+                "parameters": {"short_window": 20, "long_window": 50},
+                "commission": 1,
+                "slippage": 0.001,
+                "max_positions": 3,
+                "position_size_pct": 0.33
+            },
+            {
+                "name": "Portfolio 70/30 - 2 Years",
+                "strategy_type": "hybrid_portfolio",
+                "start_date": (datetime.now() - timedelta(days=730)).isoformat(),
+                "end_date": datetime.now().isoformat(),
+                "initial_capital": 10000,
+                "symbols": ["VOO", "SCHD", "AAPL", "MSFT", "NVDA", "GOOGL", "PLTR", "IONQ"],
+                "parameters": {},
+                "commission": 0,
+                "slippage": 0.001,
+                "max_positions": 10,
+                "position_size_pct": 0.1
+            }
+        ]
+    }
+
+
+# ================================
+# ALERT/NOTIFICATION ENDPOINTS
+# ================================
+
+class AlertConfig(BaseModel):
+    email: Optional[Dict[str, Any]] = None
+    discord: Optional[Dict[str, Any]] = None
+    telegram: Optional[Dict[str, Any]] = None
+
+
+@app.post("/alerts/initialize")
+async def initialize_alerts(alert_config: AlertConfig):
+    """
+    Initialize Alert Manager with channel configurations
+    """
+    try:
+        config_dict = {}
+        
+        if alert_config.email:
+            config_dict['email'] = alert_config.email
+        if alert_config.discord:
+            config_dict['discord'] = alert_config.discord
+        if alert_config.telegram:
+            config_dict['telegram'] = alert_config.telegram
+        
+        bot_state.alert_manager = AlertManager(config_dict)
+        
+        return {
+            "status": "initialized",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "enabled_channels": [c.value for c in bot_state.alert_manager.enabled_channels]
+        }
+    
+    except Exception as e:
+        logger.error(f"Alert initialization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/alerts/test")
+async def test_alert(channel: str = "console"):
+    """
+    Send test alert
+    """
+    if not bot_state.alert_manager:
+        bot_state.alert_manager = AlertManager()
+    
+    try:
+        channel_enum = AlertChannel(channel)
+        
+        test_alert = Alert(
+            type=AlertType.TRADE_EXECUTED,
+            title="Test Alert",
+            message="This is a test alert from TheMoneyBroker",
+            priority="medium",
+            timestamp=datetime.now(),
+            data={"Test": "Value"}
+        )
+        
+        await bot_state.alert_manager.send_alert(test_alert, [channel_enum])
+        
+        return {
+            "status": "sent",
+            "channel": channel,
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid channel: {channel}")
+    except Exception as e:
+        logger.error(f"Test alert error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/alerts/history")
+async def get_alert_history(limit: int = 100, alert_type: Optional[str] = None):
+    """
+    Get alert history
+    """
+    if not bot_state.alert_manager:
+        return {"alerts": []}
+    
+    try:
+        type_enum = AlertType(alert_type) if alert_type else None
+        history = bot_state.alert_manager.get_history(limit=limit, alert_type=type_enum)
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "count": len(history),
+            "alerts": [
+                {
+                    "type": a.type.value,
+                    "title": a.title,
+                    "message": a.message,
+                    "priority": a.priority,
+                    "timestamp": a.timestamp.isoformat(),
+                    "data": a.data
+                }
+                for a in history
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Alert history error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/alerts/history")
+async def clear_alert_history():
+    """
+    Clear alert history
+    """
+    if not bot_state.alert_manager:
+        raise HTTPException(status_code=400, detail="Alert Manager not initialized")
+    
+    try:
+        bot_state.alert_manager.clear_history()
+        return {
+            "status": "cleared",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Clear history error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/alerts/moonshot")
+async def alert_moonshot(symbol: str, score: float, reason: str):
+    """
+    Send moonshot alert (convenience endpoint)
+    """
+    if not bot_state.alert_manager:
+        bot_state.alert_manager = AlertManager()
+    
+    try:
+        await bot_state.alert_manager.alert_moonshot_found(symbol, score, reason)
+        return {
+            "status": "sent",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Moonshot alert error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

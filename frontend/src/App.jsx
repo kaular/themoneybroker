@@ -9,6 +9,7 @@ import Settings from './pages/Settings';
 import TradeHistory from './pages/TradeHistory';
 import GrowthScanner from './pages/GrowthScanner';
 import HybridPortfolio from './pages/HybridPortfolio';
+import Backtesting from './pages/Backtesting';
 import api from './services/api';
 import wsService from './services/websocket';
 
@@ -99,6 +100,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard accountData={accountData} />} />
           <Route path="/scanner" element={<GrowthScanner />} />
           <Route path="/portfolio" element={<HybridPortfolio />} />
+          <Route path="/backtest" element={<Backtesting />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="/strategies" element={<Strategies />} />
           <Route path="/orders" element={<Orders />} />

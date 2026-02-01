@@ -17,6 +17,8 @@
 - ✅ Trade History Tracking
 - ✅ Growth Stock Scanner & Moonshot Hunter System
 - ✅ Hybrid Portfolio Strategy (70/30 Core-Satellite)
+- ✅ Backtesting System mit Performance Metrics
+- ✅ Alert/Notification System (Email, Discord, Telegram)
 
 ---
 
@@ -143,8 +145,8 @@
 
 ### 🟡 Priorität 2 - Nice-to-Have (Wichtig)
 
-#### 4. Backtesting System
-**Status:** ❌ Fehlt  
+#### 3. Backtesting System
+**Status:** ✅ IMPLEMENTIERT  
 **Zeitaufwand:** 6-8 Stunden  
 **Beschreibung:**
 - Historische Daten-Tests
@@ -153,11 +155,13 @@
 - Walk-Forward Analysis
 
 **Implementierung:**
-- [ ] Historical Data Downloader (Alpaca API)
-- [ ] Backtest Engine Implementation
-- [ ] Performance Metrics (Sharpe, Max DD, etc.)
-- [ ] Backtest Results Visualization
-- [ ] Parameter Optimization Tool
+- [x] Historical Data Downloader (Alpaca API)
+- [x] Backtest Engine Implementation
+- [x] Performance Metrics (Sharpe, Sortino, Calmar, Max DD, Win Rate, Profit Factor)
+- [x] Backtest Results Visualization (Equity Curve mit Recharts)
+- [x] Walk-Forward Analysis
+- [x] Frontend UI mit Konfiguration und Metriken
+- [x] API Endpoints: /backtest/run, /backtest/walk-forward, /backtest/presets
 
 ---
 
@@ -202,15 +206,19 @@
 
 ### 🟢 Priorität 3 - Future Enhancements
 
-#### 7. Notifications & Alerts
-**Status:** ❌ Fehlt  
+#### 4. Notifications & Alerts
+**Status:** ✅ IMPLEMENTIERT
 **Zeitaufwand:** 3-4 Stunden  
 **Implementierung:**
-- [ ] Email Notifications (SendGrid/SMTP)
-- [ ] Push Notifications (Browser API)
-- [ ] Discord/Telegram Bot Integration
-- [ ] Trade Alerts UI
-- [ ] Price Alert System
+- [x] Email Notifications (SMTP)
+- [x] Discord Webhook Integration
+- [x] Telegram Bot Integration
+- [x] Alert Manager with multi-channel support
+- [x] Alert history tracking
+- [x] Convenience methods (trade, moonshot, stop-loss, take-profit, daily P/L)
+- [x] API Endpoints: /alerts/initialize, /alerts/test, /alerts/history
+- [ ] Browser Push Notifications
+- [ ] SMS via Twilio
 
 ---
 

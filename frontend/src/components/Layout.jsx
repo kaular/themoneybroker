@@ -10,7 +10,8 @@ import {
   Wifi,
   WifiOff,
   History,
-  Rocket
+  Rocket,
+  Clock
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -21,6 +22,7 @@ const Layout = ({ children, botStatus, onStartBot, onStopBot, accountData }) => 
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Growth Scanner', href: '/scanner', icon: Rocket },
     { name: 'Portfolio 70/30', href: '/portfolio', icon: PieChart },
+    { name: 'Backtesting', href: '/backtest', icon: Clock },
     { name: 'Konfiguration', href: '/configuration', icon: Settings },
     { name: 'Strategien', href: '/strategies', icon: TrendingUp },
     { name: 'Orders', href: '/orders', icon: ShoppingCart },
