@@ -1,0 +1,35 @@
+# Core Dependencies
+python-dotenv==1.0.0
+requests==2.31.0
+pandas==2.2.0
+numpy==1.26.3
+
+# Trading & Market Data
+alpaca-py==0.32.0
+yfinance==0.2.36
+ta==0.11.0  # Technical Analysis Library
+
+# Backend API
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+websockets<11,>=9.0
+python-multipart==0.0.6
+
+# Database (optional)
+sqlalchemy==2.0.25
+
+# Logging & Monitoring
+colorlog==6.8.2
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+httpx==0.26.0  # For TestClient
+
+# Development
+black==24.1.1
+flake8==7.0.0
+mypy==1.8.0
