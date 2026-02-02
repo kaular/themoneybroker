@@ -19,6 +19,7 @@
 - ✅ Hybrid Portfolio Strategy (70/30 Core-Satellite)
 - ✅ Backtesting System mit Performance Metrics
 - ✅ Alert/Notification System (Email, Discord, Telegram)
+- ✅ News Feed mit AI Sentiment Analysis
 
 ---
 
@@ -219,6 +220,32 @@
 - [x] API Endpoints: /alerts/initialize, /alerts/test, /alerts/history
 - [ ] Browser Push Notifications
 - [ ] SMS via Twilio
+
+---
+
+#### 7. News Feed & Sentiment Analysis
+**Status:** ✅ IMPLEMENTIERT
+**Zeitaufwand:** 6-8 Stunden  
+**Beschreibung:**
+- Real-time Finanznachrichten mit AI Sentiment Analysis
+- Integration in Growth Scanner (News Score)
+- Automatische Alerts bei wichtigen News
+- Multi-Source Aggregation
+- Background Monitoring
+
+**Implementierung:**
+- [x] News Feed System (Alpaca News API)
+- [x] Sentiment Analyzer (NLP mit 100+ Finanzbegriffen)
+- [x] News Score Calculator (0-100 für Scanner Integration)
+- [x] Growth Scanner News Integration (15% des Scores)
+- [x] Alert System für High-Impact News
+- [x] Frontend News Feed Page mit Filter
+- [x] API Endpoints: /news/latest, /news/symbol/{symbol}, /news/market, /news/sentiment/{symbol}
+- [x] Background News Monitoring Task (alle 5 Minuten)
+- [x] WebSocket Notifications für wichtige News
+- [x] Monitor Control UI (Start/Stop im Frontend)
+- [ ] Multi-Source Integration (NewsAPI.org, Finnhub, etc.)
+- [ ] Historical News Correlation Analysis
 
 ---
 

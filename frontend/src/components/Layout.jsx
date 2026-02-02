@@ -11,7 +11,10 @@ import {
   WifiOff,
   History,
   Rocket,
-  Clock
+  Clock,
+  Newspaper,
+  PieChart,
+  Search
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -20,9 +23,11 @@ const Layout = ({ children, botStatus, onStartBot, onStopBot, accountData }) => 
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Symbol Suche', href: '/symbols', icon: Search },
     { name: 'Growth Scanner', href: '/scanner', icon: Rocket },
     { name: 'Portfolio 70/30', href: '/portfolio', icon: PieChart },
     { name: 'Backtesting', href: '/backtest', icon: Clock },
+    { name: 'News Feed', href: '/news', icon: Newspaper },
     { name: 'Konfiguration', href: '/configuration', icon: Settings },
     { name: 'Strategien', href: '/strategies', icon: TrendingUp },
     { name: 'Orders', href: '/orders', icon: ShoppingCart },

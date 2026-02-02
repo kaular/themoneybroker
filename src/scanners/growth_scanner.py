@@ -12,6 +12,14 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+try:
+    from src.news import NewsFeed
+    NEWS_AVAILABLE = True
+except ImportError:
+    NEWS_AVAILABLE = False
+    logger.warning("News Feed module not available - news scoring disabled")
+
+
 @dataclass
 class GrowthScore:
     """Growth Stock Score mit Details"""
@@ -22,6 +30,7 @@ class GrowthScore:
     momentum_score: Optional[float] = None
     volume_increase: Optional[float] = None
     price_change_30d: Optional[float] = None
+    news_score: Optional[float] = None  # Neu: News Sentiment Score
     sector: Optional[str] = None
     market_cap: Optional[float] = None
     reason: str = ""
@@ -37,11 +46,18 @@ class GrowthStockScanner:
     - Steigendes Volumen (Institutional Interest)
     - Small/Mid Cap (<50B Market Cap)
     - Technologie-Sektor bevorzugt
+    - Positive News Sentiment (neu)
     """
     
-    def __init__(self, broker):
+    def __init__(self, broker, news_feed: Optional['NewsFeed'] = None):
         self.broker = broker
+        self.news_feed = news_feed
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        if news_feed:
+            self.logger.info("News Feed integration enabled")
+        else:
+            self.logger.info("News Feed integration disabled")
         
         # Sektor-Prioritäten (wie NVIDIA im AI-Boom)
         self.megatrend_sectors = {
@@ -79,23 +95,37 @@ class GrowthStockScanner:
         self.logger.info(f"Scanning {len(symbols)} symbols for growth opportunities...")
         
         results = []
+        scanned_count = 0
+        failed_count = 0
+        
         for symbol in symbols:
             try:
                 score = await self._calculate_growth_score(symbol)
+                scanned_count += 1
                 
-                # Filter nach Market Cap und Score
-                if score and score.score >= min_score:
-                    if score.market_cap and score.market_cap <= max_market_cap:
-                        results.append(score)
-                        
+                if score:
+                    self.logger.debug(f"{symbol}: Score={score.score:.1f}, MarketCap=${score.market_cap/1e9:.1f}B if score.market_cap else 'N/A'")
+                    
+                    # Filter nach Market Cap und Score
+                    if score.score >= min_score:
+                        if score.market_cap is None or score.market_cap <= max_market_cap:
+                            results.append(score)
+                        else:
+                            self.logger.debug(f"{symbol}: Excluded - Market cap too high (${score.market_cap/1e9:.1f}B)")
+                    else:
+                        self.logger.debug(f"{symbol}: Excluded - Score too low ({score.score:.1f} < {min_score})")
+                else:
+                    failed_count += 1
+                    
             except Exception as e:
                 self.logger.debug(f"Error scanning {symbol}: {e}")
+                failed_count += 1
                 continue
         
         # Sortiere nach Score
         results.sort(key=lambda x: x.score, reverse=True)
         
-        self.logger.info(f"Found {len(results)} growth candidates (score >= {min_score})")
+        self.logger.info(f"Scan complete: {scanned_count} scanned, {failed_count} failed, {len(results)} matches (score >= {min_score})")
         return results
     
     async def _get_screening_universe(self) -> List[str]:
@@ -135,11 +165,12 @@ class GrowthStockScanner:
         Berechnet Growth Score für ein Symbol (0-100)
         
         Score-Komponenten:
-        - 30%: Revenue Growth
-        - 25%: Relative Strength (vs Market)
-        - 20%: Momentum (Price Change)
+        - 25%: Revenue Growth
+        - 22%: Relative Strength (vs Market)
+        - 18%: Momentum (Price Change)
         - 15%: Volume Increase
-        - 10%: Sektor-Bonus
+        - 15%: News Sentiment (neu)
+        - 5%: Sektor-Bonus
         """
         try:
             # Hole Preis-Daten (30 Tage)
@@ -153,6 +184,11 @@ class GrowthStockScanner:
             volume_increase = self._calculate_volume_trend(bars)
             momentum_score = self._calculate_momentum(bars)
             
+            # Hole News Sentiment (wenn verfügbar)
+            news_score = None
+            if self.news_feed:
+                news_score = await self._get_news_score(symbol)
+            
             # Hole Fundamental-Daten (simuliert - später via API)
             revenue_growth = await self._estimate_revenue_growth(symbol)
             sector = await self._get_sector(symbol)
@@ -162,23 +198,23 @@ class GrowthStockScanner:
             score = 0.0
             reasons = []
             
-            # 1. Revenue Growth (30 Punkte)
+            # 1. Revenue Growth (25 Punkte)
             if revenue_growth:
-                rev_score = min(30, (revenue_growth / 50) * 30)  # 50% growth = volle Punkte
+                rev_score = min(25, (revenue_growth / 50) * 25)  # 50% growth = volle Punkte
                 score += rev_score
                 if revenue_growth > 30:
                     reasons.append(f"Revenue +{revenue_growth:.0f}%")
             
-            # 2. Relative Strength (25 Punkte)
+            # 2. Relative Strength (22 Punkte)
             if relative_strength:
-                rs_score = min(25, (relative_strength / 40) * 25)  # 40% outperformance = voll
+                rs_score = min(22, (relative_strength / 40) * 22)  # 40% outperformance = voll
                 score += rs_score
                 if relative_strength > 20:
                     reasons.append(f"Outperforming market by {relative_strength:.0f}%")
             
-            # 3. Momentum (20 Punkte)
+            # 3. Momentum (18 Punkte)
             if momentum_score:
-                mom_score = min(20, (momentum_score / 50) * 20)  # 50% gain = voll
+                mom_score = min(18, (momentum_score / 50) * 18)  # 50% gain = voll
                 score += mom_score
                 if price_change_30d and price_change_30d > 20:
                     reasons.append(f"Strong momentum +{price_change_30d:.0f}%")
@@ -190,13 +226,26 @@ class GrowthStockScanner:
                 if volume_increase > 50:
                     reasons.append(f"Volume surge +{volume_increase:.0f}%")
             
-            # 5. Sektor-Bonus (10 Punkte)
+            # 5. News Sentiment (15 Punkte) - NEU!
+            if news_score is not None:
+                # News Score ist 0-100, konvertiere zu 0-15 Punkte
+                news_points = (news_score / 100) * 15
+                score += news_points
+                
+                if news_score > 70:
+                    reasons.append(f"🚀 Very bullish news (score: {news_score:.0f})")
+                elif news_score > 60:
+                    reasons.append(f"📈 Positive news sentiment")
+                elif news_score < 40:
+                    reasons.append(f"⚠️ Negative news sentiment")
+            
+            # 6. Sektor-Bonus (5 Punkte + Multiplikator)
             sector_multiplier = 1.0
             if sector:
                 for trend_sector, multiplier in self.megatrend_sectors.items():
                     if trend_sector.lower() in sector.lower():
                         sector_multiplier = multiplier
-                        score += 10
+                        score += 5
                         reasons.append(f"Megatrend sector: {sector}")
                         break
             
@@ -212,6 +261,7 @@ class GrowthStockScanner:
                 momentum_score=momentum_score,
                 volume_increase=volume_increase,
                 price_change_30d=price_change_30d,
+                news_score=news_score,
                 sector=sector,
                 market_cap=market_cap,
                 reason=" | ".join(reasons) if reasons else "Growth candidate"
@@ -323,6 +373,34 @@ class GrowthStockScanner:
         
         return momentum
     
+    async def _get_news_score(self, symbol: str) -> Optional[float]:
+        """
+        Holt News Sentiment Score für ein Symbol (0-100)
+        
+        Returns:
+            float: Score von 0 (sehr bearish) bis 100 (sehr bullish)
+            None: Wenn keine News verfügbar
+        """
+        if not self.news_feed:
+            return None
+        
+        try:
+            # Hole News der letzten 7 Tage
+            articles = await self.news_feed.get_symbol_news(symbol, limit=20)
+            
+            if not articles:
+                return None
+            
+            # Berechne News Score
+            news_score = self.news_feed.calculate_news_score(symbol, articles)
+            
+            self.logger.debug(f"{symbol}: News score = {news_score:.1f} ({len(articles)} articles)")
+            return news_score
+            
+        except Exception as e:
+            self.logger.debug(f"Error getting news score for {symbol}: {e}")
+            return None
+    
     async def _estimate_revenue_growth(self, symbol: str) -> Optional[float]:
         """
         Schätzt Revenue Growth (später via Fundamental API)
@@ -415,6 +493,10 @@ class GrowthStockScanner:
             
             if stock.volume_increase:
                 report += f"   📊 Volume Trend: {stock.volume_increase:+.1f}%\n"
+            
+            if stock.news_score is not None:
+                emoji = "🚀" if stock.news_score > 70 else "📈" if stock.news_score > 50 else "📉"
+                report += f"   {emoji} News Sentiment: {stock.news_score:.1f}/100\n"
             
             if stock.sector:
                 report += f"   🏢 Sector: {stock.sector}\n"

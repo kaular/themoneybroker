@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import json
 import logging
+import os
 
 from src.brokers import AlpacaBroker, OrderType, OrderSide
 from src.strategies import SMAStrategy
@@ -24,6 +25,7 @@ from src.scanners import GrowthStockScanner
 from src.portfolio import HybridPortfolio
 from src.backtesting import Backtester, BacktestConfig
 from src.alerts import AlertManager, Alert, AlertType, AlertChannel
+from src.news import NewsFeed, NewsMonitor, NewsMonitorConfig
 
 # Logger
 logger = setup_logger("API", config.LOG_LEVEL)
@@ -35,9 +37,51 @@ async def lifespan(app: FastAPI):
     # Startup
     init_db()
     logger.info("Database initialized")
+    
+    # Auto-connect broker if credentials in .env
+    await auto_connect_broker()
+    
     yield
     # Shutdown
+    if bot_state.news_monitor:
+        await bot_state.news_monitor.stop()
+        logger.info("News Monitor stopped")
     logger.info("API shutting down")
+
+
+async def auto_connect_broker():
+    """Versucht automatisch Broker zu verbinden wenn Credentials vorhanden"""
+    try:
+        api_key = os.getenv('BROKER_API_KEY')
+        api_secret = os.getenv('BROKER_API_SECRET')
+        base_url = os.getenv('BROKER_BASE_URL', 'https://paper-api.alpaca.markets')
+        
+        if api_key and api_secret:
+            logger.info("Found broker credentials in .env, connecting...")
+            bot_state.broker = AlpacaBroker(
+                api_key=api_key,
+                api_secret=api_secret,
+                base_url=base_url
+            )
+            
+            if bot_state.broker.connect():
+                bot_state.connected = True
+                account = bot_state.broker.get_account_info()
+                
+                # Initialisiere Stop-Loss Manager
+                bot_state.stop_loss_manager = StopLossManager(
+                    broker=bot_state.broker,
+                    check_interval=1.0
+                )
+                await bot_state.stop_loss_manager.start_monitoring()
+                
+                logger.info(f"✅ Broker auto-connected! Portfolio: ${float(account.portfolio_value):,.2f}")
+            else:
+                logger.warning("Broker credentials found but connection failed")
+        else:
+            logger.info("No broker credentials in .env - manual connection required")
+    except Exception as e:
+        logger.error(f"Error auto-connecting broker: {e}")
 
 # FastAPI App
 app = FastAPI(
@@ -65,6 +109,8 @@ class BotState:
         self.execution_engine: Optional[ExecutionEngine] = None
         self.portfolio_manager: Optional[HybridPortfolio] = None
         self.alert_manager: Optional[AlertManager] = None
+        self.news_feed: Optional[NewsFeed] = None
+        self.news_monitor: Optional[NewsMonitor] = None
         self.strategies: List = []
         self.is_running = False
         self.connected = False
@@ -202,6 +248,80 @@ async def disconnect_broker():
         await broadcast_update({"type": "broker_disconnected"})
         return {"success": True, "message": "Broker getrennt"}
     return {"success": False, "message": "Kein Broker verbunden"}
+
+
+@app.get("/quote/{symbol}")
+async def get_quote(symbol: str):
+    """Holt aktuelle Quote für ein Symbol"""
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker nicht verbunden")
+    
+    try:
+        from datetime import datetime, timedelta
+        
+        logger.info(f"Fetching quote for {symbol}...")
+        
+        # Hole die letzten 5 Tage Daten (um sicher zu gehen dass wir Daten haben)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=5)
+        
+        logger.info(f"Requesting historical data: {start_date} to {end_date}")
+        
+        bars = bot_state.broker.get_historical_data(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe='1D'
+        )
+        
+        logger.info(f"Bars result: {bars is not None}, length: {len(bars) if bars is not None else 0}")
+        
+        if bars is not None and len(bars) > 0:
+            current_bar = bars.iloc[-1]
+            current_price = float(current_bar['close'])
+            volume = int(current_bar['volume']) if 'volume' in current_bar else 0
+            
+            # Berechne Änderung wenn genug Daten
+            if len(bars) >= 2:
+                prev_close = float(bars.iloc[-2]['close'])
+                change = current_price - prev_close
+                change_percent = (change / prev_close) * 100
+            else:
+                change = 0.0
+                change_percent = 0.0
+            
+            logger.info(f"Returning quote: ${current_price}")
+            return {
+                "symbol": symbol,
+                "price": current_price,
+                "change": change,
+                "change_percent": change_percent,
+                "volume": volume
+            }
+        else:
+            # Fallback: Versuche aktuellen Marktpreis zu holen
+            logger.info(f"No historical data, trying get_market_price()...")
+            try:
+                price = bot_state.broker.get_market_price(symbol)
+                logger.info(f"Market price: ${price}")
+                return {
+                    "symbol": symbol,
+                    "price": float(price),
+                    "change": 0.0,
+                    "change_percent": 0.0,
+                    "volume": 0
+                }
+            except Exception as e:
+                logger.error(f"No data available for {symbol}: {e}", exc_info=True)
+                raise HTTPException(status_code=404, detail=f"Keine Daten für {symbol} verfügbar")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error fetching quote for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.warning(f"Error getting quote for {symbol}: {e}")
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} nicht gefunden")
 
 
 @app.get("/account")
@@ -702,11 +822,17 @@ async def scan_growth_stocks(
     - symbols: Optional - spezifische Symbole (komma-getrennt)
     """
     if not bot_state.broker or not bot_state.connected:
-        raise HTTPException(status_code=400, detail="Broker not connected")
+        raise HTTPException(
+            status_code=400, 
+            detail="Broker nicht verbunden. Bitte zuerst Broker in Configuration verbinden."
+        )
     
     try:
-        # Erstelle Scanner
-        scanner = GrowthStockScanner(bot_state.broker)
+        # Erstelle Scanner mit News Feed (falls verfügbar)
+        scanner = GrowthStockScanner(
+            bot_state.broker,
+            news_feed=bot_state.news_feed
+        )
         
         # Parse Symbole
         symbol_list = None
@@ -726,6 +852,7 @@ async def scan_growth_stocks(
             "scan_time": datetime.now(UTC).isoformat(),
             "total_scanned": len(symbol_list) if symbol_list else "universe",
             "matches_found": len(results),
+            "news_enabled": bot_state.news_feed is not None,
             "results": [
                 {
                     "symbol": stock.symbol,
@@ -735,6 +862,7 @@ async def scan_growth_stocks(
                     "momentum_score": stock.momentum_score,
                     "volume_increase": stock.volume_increase,
                     "price_change_30d": stock.price_change_30d,
+                    "news_score": stock.news_score,
                     "sector": stock.sector,
                     "market_cap": stock.market_cap,
                     "reason": stock.reason
@@ -744,8 +872,8 @@ async def scan_growth_stocks(
         }
     
     except Exception as e:
-        logger.error(f"Scanner error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Scanner error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Scanner Fehler: {str(e)}")
 
 
 @app.get("/scanner/report")
@@ -1385,6 +1513,321 @@ async def alert_moonshot(symbol: str, score: float, reason: str):
     except Exception as e:
         logger.error(f"Moonshot alert error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# NEWS FEED ENDPOINTS
+# ================================
+
+@app.post("/news/initialize")
+async def initialize_news_feed():
+    """
+    Initialize News Feed
+    """
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker not connected")
+    
+    try:
+        bot_state.news_feed = NewsFeed(
+            broker=bot_state.broker,
+            alert_manager=bot_state.alert_manager
+        )
+        
+        return {
+            "status": "initialized",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"News feed initialization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/news/latest")
+async def get_latest_news(symbols: Optional[str] = None, 
+                          limit: int = 50,
+                          hours_back: int = 24):
+    """
+    Get latest news
+    
+    Args:
+        symbols: Comma-separated symbols (optional)
+        limit: Max articles
+        hours_back: Hours to look back
+    """
+    if not bot_state.news_feed:
+        if not bot_state.broker or not bot_state.connected:
+            raise HTTPException(status_code=400, detail="Broker not connected")
+        bot_state.news_feed = NewsFeed(bot_state.broker, bot_state.alert_manager)
+    
+    try:
+        symbol_list = symbols.split(',') if symbols else None
+        
+        articles = await bot_state.news_feed.get_news(
+            symbols=symbol_list,
+            limit=limit,
+            hours_back=hours_back
+        )
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "count": len(articles),
+            "articles": [
+                {
+                    "id": a.id,
+                    "headline": a.headline,
+                    "summary": a.summary,
+                    "author": a.author,
+                    "created_at": a.created_at.isoformat(),
+                    "url": a.url,
+                    "symbols": a.symbols,
+                    "source": a.source,
+                    "sentiment": {
+                        "score": a.sentiment.score,
+                        "label": a.sentiment.label,
+                        "confidence": a.sentiment.confidence,
+                        "emoji": a.get_sentiment_emoji()
+                    } if a.sentiment else None
+                }
+                for a in articles
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"News fetch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/news/symbol/{symbol}")
+async def get_symbol_news(symbol: str, limit: int = 20):
+    """
+    Get news for specific symbol
+    """
+    if not bot_state.news_feed:
+        if not bot_state.broker or not bot_state.connected:
+            raise HTTPException(status_code=400, detail="Broker not connected")
+        bot_state.news_feed = NewsFeed(bot_state.broker, bot_state.alert_manager)
+    
+    try:
+        articles = await bot_state.news_feed.get_symbol_news(symbol, limit=limit)
+        
+        # Get sentiment summary
+        sentiment_summary = bot_state.news_feed.get_sentiment_summary(articles)
+        
+        # Calculate news score
+        news_score = bot_state.news_feed.calculate_news_score(symbol, articles)
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "symbol": symbol,
+            "count": len(articles),
+            "news_score": news_score,
+            "sentiment_summary": sentiment_summary,
+            "articles": [
+                {
+                    "id": a.id,
+                    "headline": a.headline,
+                    "summary": a.summary,
+                    "created_at": a.created_at.isoformat(),
+                    "url": a.url,
+                    "source": a.source,
+                    "sentiment": {
+                        "score": a.sentiment.score,
+                        "label": a.sentiment.label,
+                        "confidence": a.sentiment.confidence,
+                        "emoji": a.get_sentiment_emoji()
+                    } if a.sentiment else None
+                }
+                for a in articles
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Symbol news error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/news/market")
+async def get_market_news(limit: int = 50):
+    """
+    Get general market news
+    """
+    if not bot_state.news_feed:
+        if not bot_state.broker or not bot_state.connected:
+            raise HTTPException(status_code=400, detail="Broker not connected")
+        bot_state.news_feed = NewsFeed(bot_state.broker, bot_state.alert_manager)
+    
+    try:
+        articles = await bot_state.news_feed.get_market_news(limit=limit)
+        
+        sentiment_summary = bot_state.news_feed.get_sentiment_summary(articles)
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "count": len(articles),
+            "sentiment_summary": sentiment_summary,
+            "articles": [
+                {
+                    "id": a.id,
+                    "headline": a.headline,
+                    "summary": a.summary,
+                    "created_at": a.created_at.isoformat(),
+                    "url": a.url,
+                    "symbols": a.symbols,
+                    "source": a.source,
+                    "sentiment": {
+                        "score": a.sentiment.score,
+                        "label": a.sentiment.label,
+                        "confidence": a.sentiment.confidence,
+                        "emoji": a.get_sentiment_emoji()
+                    } if a.sentiment else None
+                }
+                for a in articles
+            ]
+        }
+    
+    except Exception as e:
+        logger.error(f"Market news error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/news/sentiment/{symbol}")
+async def get_sentiment_analysis(symbol: str):
+    """
+    Get sentiment analysis for symbol
+    """
+    if not bot_state.news_feed:
+        if not bot_state.broker or not bot_state.connected:
+            raise HTTPException(status_code=400, detail="Broker not connected")
+        bot_state.news_feed = NewsFeed(bot_state.broker, bot_state.alert_manager)
+    
+    try:
+        articles = await bot_state.news_feed.get_symbol_news(symbol, limit=50)
+        
+        sentiment_summary = bot_state.news_feed.get_sentiment_summary(articles)
+        news_score = bot_state.news_feed.calculate_news_score(symbol, articles)
+        
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "symbol": symbol,
+            "news_score": news_score,
+            "sentiment": sentiment_summary
+        }
+    
+    except Exception as e:
+        logger.error(f"Sentiment analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# NEWS MONITOR ENDPOINTS
+# ============================================================================
+
+@app.post("/news/monitor/start")
+async def start_news_monitor(
+    check_interval: int = 300,
+    symbols: Optional[str] = None,
+    min_confidence: float = 0.7
+):
+    """
+    Start background news monitoring
+    
+    Parameters:
+    - check_interval: Seconds between checks (default 300 = 5 minutes)
+    - symbols: Comma-separated list of symbols to monitor (None = all)
+    - min_confidence: Minimum sentiment confidence for alerts (0-1)
+    """
+    if not bot_state.news_feed:
+        raise HTTPException(status_code=400, detail="News Feed not initialized")
+    
+    try:
+        # Parse symbols
+        symbol_list = None
+        if symbols:
+            symbol_list = [s.strip().upper() for s in symbols.split(',')]
+        
+        # Create monitor config
+        config = NewsMonitorConfig(
+            check_interval_seconds=check_interval,
+            symbols=symbol_list,
+            min_confidence=min_confidence,
+            enabled=True
+        )
+        
+        # WebSocket notification callback
+        async def on_important_news(article):
+            """Send WebSocket notification for important news"""
+            notification = {
+                "type": "important_news",
+                "data": {
+                    "symbol": article.symbols[0] if article.symbols else "MARKET",
+                    "headline": article.headline,
+                    "sentiment": article.sentiment.label if article.sentiment else "neutral",
+                    "score": article.sentiment.score if article.sentiment else 0,
+                    "url": article.url,
+                    "timestamp": article.created_at.isoformat()
+                }
+            }
+            await broadcast_to_clients(notification)
+        
+        # Create and start monitor
+        if bot_state.news_monitor:
+            await bot_state.news_monitor.stop()
+        
+        bot_state.news_monitor = NewsMonitor(
+            bot_state.news_feed,
+            config=config,
+            on_important_news=on_important_news
+        )
+        
+        await bot_state.news_monitor.start()
+        
+        return {
+            "status": "started",
+            "config": {
+                "check_interval": check_interval,
+                "symbols": symbol_list or "all",
+                "min_confidence": min_confidence
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"News monitor start error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/news/monitor/stop")
+async def stop_news_monitor():
+    """Stop background news monitoring"""
+    if not bot_state.news_monitor:
+        raise HTTPException(status_code=400, detail="News Monitor not running")
+    
+    try:
+        await bot_state.news_monitor.stop()
+        bot_state.news_monitor = None
+        
+        return {"status": "stopped"}
+    
+    except Exception as e:
+        logger.error(f"News monitor stop error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/news/monitor/status")
+async def get_monitor_status():
+    """Get news monitor status and statistics"""
+    if not bot_state.news_monitor:
+        return {
+            "running": False,
+            "stats": None
+        }
+    
+    stats = bot_state.news_monitor.get_stats()
+    
+    return {
+        "running": True,
+        "stats": stats
+    }
 
 
 # Old startup event removed - now using lifespan

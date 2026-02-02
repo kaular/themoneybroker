@@ -6,7 +6,7 @@ export default function GrowthScanner() {
   const [scanning, setScanning] = useState(false);
   const [results, setResults] = useState([]);
   const [scanStats, setScanStats] = useState(null);
-  const [minScore, setMinScore] = useState(65);
+  const [minScore, setMinScore] = useState(40);
   const [customSymbols, setCustomSymbols] = useState('');
   const [error, setError] = useState(null);
 
@@ -33,7 +33,9 @@ export default function GrowthScanner() {
         matches_found: response.data.matches_found
       });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Scanner Fehler');
+      console.error('Scanner error:', err);
+      const errorMsg = err.response?.data?.detail || err.message || 'Scanner Fehler';
+      setError(errorMsg);
     } finally {
       setScanning(false);
     }
@@ -171,6 +173,11 @@ export default function GrowthScanner() {
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800 font-medium">⚠️ {error}</p>
+          {error.includes('nicht verbunden') && (
+            <p className="text-red-600 text-sm mt-2">
+              💡 Gehe zur <a href="/configuration" className="underline font-semibold">Configuration</a> Seite und verbinde zuerst deinen Broker.
+            </p>
+          )}
         </div>
       )}
 
@@ -207,6 +214,9 @@ export default function GrowthScanner() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Revenue Growth
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    News Sentiment
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Sektor
@@ -248,8 +258,26 @@ export default function GrowthScanner() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className="text-purple-600 font-semibold">
-                        {stock.revenue_growth ? `${stock.revenue_growth.toFixed(0)}%` : 'N/A'}
+                        {formatNumber(stock.revenue_growth)}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {stock.news_score !== null && stock.news_score !== undefined ? (
+                        <div className="flex items-center gap-1">
+                          <span className="text-xl">
+                            {stock.news_score > 70 ? '🚀' : stock.news_score > 50 ? '📈' : stock.news_score < 40 ? '📉' : '➡️'}
+                          </span>
+                          <span className={`font-semibold ${
+                            stock.news_score > 60 ? 'text-green-600' : 
+                            stock.news_score < 40 ? 'text-red-600' : 
+                            'text-gray-600'
+                          }`}>
+                            {stock.news_score.toFixed(0)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 text-sm">N/A</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className="px-2 py-1 bg-indigo-100 text-indigo-800 text-xs rounded-full font-medium">

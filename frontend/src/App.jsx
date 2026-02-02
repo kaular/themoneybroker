@@ -10,6 +10,8 @@ import TradeHistory from './pages/TradeHistory';
 import GrowthScanner from './pages/GrowthScanner';
 import HybridPortfolio from './pages/HybridPortfolio';
 import Backtesting from './pages/Backtesting';
+import NewsFeed from './pages/NewsFeed';
+import SymbolSearch from './pages/SymbolSearch';
 import api from './services/api';
 import wsService from './services/websocket';
 
@@ -99,8 +101,10 @@ function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard accountData={accountData} />} />
           <Route path="/scanner" element={<GrowthScanner />} />
+          <Route path="/symbols" element={<SymbolSearch />} />
           <Route path="/portfolio" element={<HybridPortfolio />} />
           <Route path="/backtest" element={<Backtesting />} />
+          <Route path="/news" element={<NewsFeed />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="/strategies" element={<Strategies />} />
           <Route path="/orders" element={<Orders />} />

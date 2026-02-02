@@ -12,6 +12,23 @@ class ApiClient {
     });
   }
 
+  // Generic HTTP methods
+  async get(url, config = {}) {
+    return this.client.get(url, config);
+  }
+
+  async post(url, data, config = {}) {
+    return this.client.post(url, data, config);
+  }
+
+  async put(url, data, config = {}) {
+    return this.client.put(url, data, config);
+  }
+
+  async delete(url, config = {}) {
+    return this.client.delete(url, config);
+  }
+
   // Broker APIs
   async connectBroker(config) {
     return this.client.post('/broker/connect', config);

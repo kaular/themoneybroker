@@ -32,20 +32,23 @@ def save_trade(
     Returns:
         Trade: Gespeicherter Trade
     """
+    # Hole order_id (kann .id oder .order_id sein)
+    order_id = getattr(order, 'id', None) or getattr(order, 'order_id', None)
+    
     trade = Trade(
-        order_id=order.id,
+        order_id=order_id,
         symbol=order.symbol,
         side=order.side.value if hasattr(order.side, 'value') else str(order.side),
-        order_type=order.type.value if hasattr(order.type, 'value') else str(order.type),
+        order_type=getattr(order, 'type', getattr(order, 'order_type', 'market')).value if hasattr(getattr(order, 'type', getattr(order, 'order_type', 'market')), 'value') else str(getattr(order, 'type', getattr(order, 'order_type', 'market'))),
         quantity=order.quantity,
-        filled_qty=order.filled_qty or 0.0,
-        avg_fill_price=order.filled_avg_price,
-        limit_price=order.limit_price,
+        filled_qty=getattr(order, 'filled_qty', None) or getattr(order, 'filled_quantity', 0.0),
+        avg_fill_price=getattr(order, 'filled_avg_price', None) or getattr(order, 'average_fill_price', None),
+        limit_price=getattr(order, 'limit_price', None),
         status=order.status.value if hasattr(order.status, 'value') else str(order.status),
-        submitted_at=order.submitted_at or datetime.utcnow(),
-        filled_at=order.filled_at if order.filled_at else None,
+        submitted_at=getattr(order, 'submitted_at', None) or datetime.utcnow(),
+        filled_at=getattr(order, 'filled_at', None),
         commission=0.0,  # Wird später vom Broker aktualisiert
-        total_value=order.filled_qty * order.filled_avg_price if order.filled_avg_price and order.filled_qty else None,
+        total_value=(getattr(order, 'filled_qty', None) or getattr(order, 'filled_quantity', 0.0)) * (getattr(order, 'filled_avg_price', None) or getattr(order, 'average_fill_price', 0.0)) if (getattr(order, 'filled_avg_price', None) or getattr(order, 'average_fill_price', None)) and (getattr(order, 'filled_qty', None) or getattr(order, 'filled_quantity', None)) else None,
         strategy_id=strategy_id,
         stop_loss=stop_loss,
         take_profit=take_profit,

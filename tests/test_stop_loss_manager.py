@@ -402,3 +402,205 @@ class TestStopLossIntegration:
         
         # Preis fällt auf 160 -> Trigger!
         assert manager._should_trigger_stop_loss(config, 160.0, "long")
+    
+    @pytest.mark.asyncio
+    async def test_monitoring_loop_with_errors(self, mock_broker):
+        """Test: Monitoring Loop Error Handling"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Mock positions mit Fehler beim ersten Mal
+        call_count = [0]
+        original_get_positions = mock_broker.get_positions
+        
+        def get_positions_with_error():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception("Test error")
+            return original_get_positions()
+        
+        mock_broker.get_positions = get_positions_with_error
+        
+        # Setup Stop-Loss
+        manager.set_stop_loss("AAPL", StopType.FIXED, stop_price=145.0)
+        
+        # Start Monitoring
+        await manager.start_monitoring()
+        
+        # Warte kurz
+        await asyncio.sleep(0.3)
+        
+        # Stop Monitoring
+        await manager.stop_monitoring()
+        
+        # Test sollte nicht crashen trotz Fehler
+        assert not manager.is_monitoring
+        assert call_count[0] >= 2  # Mindestens 2 Aufrufe (1 mit Fehler, 1+ erfolgreich)
+    
+    @pytest.mark.asyncio
+    async def test_stop_monitoring_twice(self, mock_broker):
+        """Test: Stop Monitoring zweimal aufrufen"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        await manager.start_monitoring()
+        assert manager.is_monitoring
+        
+        # Zweimal stoppen sollte kein Problem sein
+        await manager.stop_monitoring()
+        assert not manager.is_monitoring
+        
+        await manager.stop_monitoring()
+        assert not manager.is_monitoring
+    
+    @pytest.mark.asyncio
+    async def test_start_monitoring_twice(self, mock_broker):
+        """Test: Start Monitoring zweimal aufrufen"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        await manager.start_monitoring()
+        assert manager.is_monitoring
+        
+        # Zweimal starten sollte Warning loggen
+        await manager.start_monitoring()
+        assert manager.is_monitoring
+        
+        await manager.stop_monitoring()
+    
+    @pytest.mark.asyncio
+    async def test_check_positions_with_missing_entry_price(self, mock_broker):
+        """Test: Position ohne Entry Price wird gesetzt"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Setup Stop-Loss ohne Entry Price
+        manager.set_stop_loss("AAPL", StopType.PERCENTAGE, stop_percentage=2.0)
+        config = manager.get_stop_config("AAPL")
+        assert config.entry_price is None
+        
+        # Mock Position mit avg_entry_price
+        from tests.conftest import create_mock_position
+        position = create_mock_position("AAPL", 10, 150.0, 155.0)
+        mock_broker.positions = [position]
+        
+        # Check positions
+        await manager._check_positions()
+        
+        # Entry Price sollte jetzt gesetzt sein
+        assert config.entry_price == 150.0
+    
+    @pytest.mark.asyncio
+    async def test_stop_loss_short_position(self, mock_broker):
+        """Test: Stop-Loss für Short Position"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Short Position mit Stop-Loss
+        manager.set_stop_loss(
+            symbol="TSLA",
+            stop_type=StopType.FIXED,
+            stop_price=210.0,  # Stop bei 210 (short, also Preis steigt)
+            entry_price=200.0
+        )
+        
+        config = manager.get_stop_config("TSLA")
+        
+        # Preis steigt auf 211 -> Trigger (Short wird geschlossen)
+        assert manager._should_trigger_stop_loss(config, 211.0, "short")
+        
+        # Preis bei 205 -> Kein Trigger
+        assert not manager._should_trigger_stop_loss(config, 205.0, "short")
+    
+    @pytest.mark.asyncio
+    async def test_take_profit_short_position(self, mock_broker):
+        """Test: Take-Profit für Short Position"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Short Position mit Take-Profit
+        manager.set_stop_loss(
+            symbol="NVDA",
+            stop_type=StopType.FIXED,
+            entry_price=500.0
+        )
+        manager.set_take_profit(
+            symbol="NVDA",
+            take_profit_price=450.0  # Profit bei 450 (short, Preis fällt)
+        )
+        
+        config = manager.get_stop_config("NVDA")
+        
+        # Preis fällt auf 445 -> Trigger
+        assert manager._should_trigger_take_profit(config, 445.0, "short")
+        
+        # Preis bei 460 -> Kein Trigger
+        assert not manager._should_trigger_take_profit(config, 460.0, "short")
+    
+    @pytest.mark.asyncio
+    async def test_trailing_stop_short_position(self, mock_broker):
+        """Test: Trailing Stop für Short Position"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        manager.set_stop_loss(
+            symbol="AMD",
+            stop_type=StopType.TRAILING,
+            trailing_percentage=3.0,
+            entry_price=100.0
+        )
+        
+        config = manager.get_stop_config("AMD")
+        
+        # Short: Preis fällt auf 95 (niedrigster Preis)
+        manager._update_trailing_stop(config, 95.0, "short")
+        stop_at_95 = config.stop_price
+        assert stop_at_95 == 95.0 * 1.03  # 97.85
+        
+        # Preis fällt weiter auf 90
+        manager._update_trailing_stop(config, 90.0, "short")
+        stop_at_90 = config.stop_price
+        assert stop_at_90 == 90.0 * 1.03  # 92.7
+        assert stop_at_90 < stop_at_95  # Stop-Loss bewegt sich nach unten
+    
+    @pytest.mark.asyncio
+    async def test_stop_loss_without_percentage_or_price(self, mock_broker):
+        """Test: Stop-Loss ohne Preis oder Prozent"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Setup ohne Stop-Price oder Prozent
+        manager.set_stop_loss("AAPL", StopType.FIXED)
+        config = manager.get_stop_config("AAPL")
+        
+        # Sollte False zurückgeben (kein Trigger möglich)
+        assert not manager._should_trigger_stop_loss(config, 150.0, "long")
+    
+    @pytest.mark.asyncio
+    async def test_take_profit_percentage_calculation(self, mock_broker):
+        """Test: Take-Profit aus Prozent berechnen"""
+        manager = StopLossManager(broker=mock_broker, check_interval=0.1)
+        
+        # Setup mit Take-Profit Percentage
+        manager.set_stop_loss(
+            symbol="AAPL",
+            stop_type=StopType.FIXED,
+            entry_price=100.0
+        )
+        manager.set_take_profit(
+            symbol="AAPL",
+            take_profit_percentage=10.0
+        )
+        
+        config = manager.get_stop_config("AAPL")
+        
+        # Long Position: Take-Profit sollte bei 110 sein
+        assert manager._should_trigger_take_profit(config, 111.0, "long")
+        assert not manager._should_trigger_take_profit(config, 109.0, "long")
+        
+        # Short Position: Take-Profit sollte bei 90 sein
+        manager.set_stop_loss(
+            symbol="TSLA",
+            stop_type=StopType.FIXED,
+            entry_price=100.0
+        )
+        manager.set_take_profit(
+            symbol="TSLA",
+            take_profit_percentage=10.0
+        )
+        config2 = manager.get_stop_config("TSLA")
+        
+        assert manager._should_trigger_take_profit(config2, 89.0, "short")
+        assert not manager._should_trigger_take_profit(config2, 91.0, "short")

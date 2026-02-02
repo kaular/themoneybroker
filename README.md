@@ -4,12 +4,20 @@ Ein automatisiertes Trading-System zur Interaktion mit Broker-APIs und automatis
 
 ## Features
 
-- 🔌 Modulare Broker-API Integration
+- 🔌 Modulare Broker-API Integration (Alpaca Paper Trading)
 - 📊 Flexibles Trading-Strategy Framework
 - ⚡ Automatische Order-Ausführung
-- 🛡️ Risk Management System
+- 🛡️ Risk Management System mit Stop-Loss & Take-Profit
 - 📝 Umfassendes Logging & Monitoring
 - 🔐 Sichere Credential-Verwaltung
+- 🚀 **Growth Stock Scanner** - Identifiziert High-Growth Stocks mit Moonshot-Potenzial
+- 💼 **Hybrid Portfolio (70/30)** - Core-Satellite Strategie mit automatischem Rebalancing
+- 📈 **Backtesting System** - Performance-Validierung mit Sharpe/Sortino/Calmar Ratios
+- 🔔 **Multi-Channel Alerts** - Email, Discord, Telegram Notifications
+- 📰 **News Feed mit AI Sentiment** - Real-time News-Analyse und Integration in Scanner
+- 🤖 **Background News Monitor** - Automatische Überwachung wichtiger News
+- 🌐 **React Frontend** - Modern UI mit Vite & Tailwind CSS
+- 💾 **Database Integration** - SQLite für Trade-Historie und Performance-Tracking
 
 ## Installation
 

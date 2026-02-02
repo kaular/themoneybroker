@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-02
+
+### Added
+
+#### News & Sentiment System
+- **News Feed Module** (`src/news/`)
+  - `news_feed.py`: Real-time news fetching from multiple sources (Alpaca, NewsAPI)
+  - `sentiment_analyzer.py`: AI-powered sentiment analysis using transformers
+  - `news_monitor.py`: Background monitoring service with alerts
+  - Sentiment-based trading signals: Buy/Sell/Hold recommendations
+- **News API Endpoints**
+  - `GET /news/feed`: Fetch news for specific symbols or market-wide
+  - `GET /news/sentiment/{symbol}`: Get sentiment analysis for a symbol
+  - `GET /news/alerts`: Active news-based alerts
+- **News Feed Frontend** (`frontend/src/pages/NewsFeed.jsx`)
+  - Real-time news display with sentiment indicators
+  - Color-coded sentiment badges (positive/negative/neutral)
+  - Filter by symbol and time range
+  - Direct links to news sources
+
+#### Symbol Search & Discovery
+- **Symbol Search Page** (`frontend/src/pages/SymbolSearch.jsx`)
+  - Real-time symbol search across markets
+  - Asset type filtering (stocks, crypto, forex)
+  - Exchange information display
+  - One-click symbol addition to watchlists
+
+#### Enhanced Growth Scanner
+- **Improved Performance Tracking**
+  - Multi-timeframe analysis (daily, weekly, monthly)
+  - Better error handling and data validation
+  - Enhanced metrics calculation
+  - API endpoints for scanner results
+
+#### Testing & CI/CD
+- **Comprehensive Test Suite**
+  - Unit tests for news system, alerts, scanner
+  - Integration tests for trading workflows
+  - Test coverage reporting (coverage.xml)
+  - Pytest configuration with parallel execution
+- **GitHub Actions CI/CD** (`.github/workflows/`)
+  - Automated testing on push/PR
+  - Docker image building and publishing
+  - Multi-platform support
+- **Test Scripts**
+  - `run_tests.ps1`: PowerShell test runner
+  - `run_tests.sh`: Bash test runner
+  - Test documentation in `tests/README.md`
+
+#### Docker & Deployment
+- **Docker Compose Setup**
+  - Multi-service orchestration (backend, frontend, database)
+  - Environment-based configuration
+  - Volume management for data persistence
+- **Frontend Dockerfile** with nginx
+  - Production-optimized React build
+  - Reverse proxy configuration
+  - Static asset serving
+
+#### Documentation
+- `NEWS_SYSTEM.md`: News system architecture and usage
+- `IMPLEMENTATION_COMPLETE.md`: Feature implementation status
+- `docs/CI-CD.md`: CI/CD pipeline documentation
+
+### Changed
+- Updated alert manager with news-based alerts
+- Enhanced backtesting module initialization
+- Improved trade tracker with better error handling
+- Updated API with new endpoints for news and search
+- Refactored frontend layout and navigation
+
+### Fixed
+- Test configuration and fixture issues
+- Database session management in tests
+- Frontend API service error handling
+
 ## [1.0.0] - 2026-02-01
 
 ### Added

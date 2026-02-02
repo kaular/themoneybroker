@@ -384,8 +384,9 @@ class AlertManager:
             }
         )
         await self.send_alert(alert)
+        return alert
     
-    async def alert_moonshot_found(self, symbol: str, score: float, reason: str):
+    async def alert_moonshot_found(self, symbol: str, score: float, reason: str = "Strong growth indicators"):
         """Send moonshot found alert"""
         alert = Alert(
             type=AlertType.MOONSHOT_FOUND,
@@ -400,6 +401,7 @@ class AlertManager:
             }
         )
         await self.send_alert(alert)
+        return alert
     
     async def alert_rebalance_needed(self, actions_count: int):
         """Send rebalance needed alert"""

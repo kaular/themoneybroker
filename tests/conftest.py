@@ -235,3 +235,20 @@ class MockBroker(BaseBroker):
 def mock_broker():
     """Mock Broker Fixture"""
     return MockBroker()
+
+
+def create_mock_position(symbol: str, qty: float, avg_entry_price: float, current_price: float, side: str = "long"):
+    """Helper: Mock Position erstellen"""
+    class MockPosition:
+        def __init__(self):
+            self.symbol = symbol
+            self.qty = qty
+            self.side = side
+            self.avg_entry_price = avg_entry_price
+            self.current_price = current_price
+            self.market_value = qty * current_price
+            self.cost_basis = qty * avg_entry_price
+            self.unrealized_pnl = (current_price - avg_entry_price) * qty
+            self.unrealized_pnl_percent = ((current_price - avg_entry_price) / avg_entry_price) * 100
+    
+    return MockPosition()

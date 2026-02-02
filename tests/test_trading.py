@@ -2,12 +2,14 @@
 Test Suite für Trading Bot
 """
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import pandas as pd
+from unittest.mock import Mock, AsyncMock
 
 from src.strategies import SMAStrategy, Signal
 from src.risk import RiskManager, RiskLimits
 from src.brokers import AccountInfo, Position
+from src.scanners.growth_scanner import GrowthStockScanner, GrowthScore
 
 
 class TestSMAStrategy:
@@ -37,6 +39,45 @@ class TestSMAStrategy:
         
         assert signal.symbol == 'TEST'
         assert signal.price > 0
+
+
+@pytest.mark.asyncio
+class TestGrowthScanner:
+    """Tests für Growth Stock Scanner"""
+    
+    def setup_method(self):
+        self.broker = Mock()
+        self.news_feed = Mock()
+        self.scanner = GrowthStockScanner(self.broker, self.news_feed)
+    
+    async def test_scanner_initialization(self):
+        """Test: Scanner Initialization"""
+        assert self.scanner.broker is not None
+        assert len(self.scanner.megatrend_sectors) > 0
+    
+    def test_calculate_price_change(self):
+        """Test: Price Change Calculation"""
+        bars = [
+            {'close': 100.0, 'volume': 1000000, 'timestamp': datetime.now(UTC)},
+            {'close': 110.0, 'volume': 1200000, 'timestamp': datetime.now(UTC)},
+            {'close': 120.0, 'volume': 1500000, 'timestamp': datetime.now(UTC)}
+        ]
+        
+        change = self.scanner._calculate_price_change(bars)
+        assert change == 20.0  # 20% increase
+    
+    def test_growth_score_format(self):
+        """Test: Growth Score Data Structure"""
+        score = GrowthScore(
+            symbol="TSLA",
+            score=85.5,
+            revenue_growth=45.0,
+            news_score=75.0,
+            reason="Strong growth"
+        )
+        
+        assert score.symbol == "TSLA"
+        assert 0 <= score.score <= 100
 
 
 class TestRiskManager:
