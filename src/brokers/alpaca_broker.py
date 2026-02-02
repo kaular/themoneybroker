@@ -6,9 +6,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide, TimeInForce, OrderType as AlpacaOrderType
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 import logging
 
@@ -69,8 +69,8 @@ class AlpacaBroker(BaseBroker):
             portfolio_value=float(account.portfolio_value),
             buying_power=float(account.buying_power),
             equity=float(account.equity),
-            unrealized_pnl=float(account.unrealized_plpc if hasattr(account, 'unrealized_plpc') else 0),
-            realized_pnl=float(0)
+            unrealized_pnl=float(account.unrealized_pl if hasattr(account, 'unrealized_pl') else 0),
+            realized_pnl=float(account.realized_pl if hasattr(account, 'realized_pl') else 0)
         )
     
     def get_positions(self) -> List[Position]:
@@ -204,7 +204,10 @@ class AlpacaBroker(BaseBroker):
         
         try:
             from alpaca.data.requests import StockLatestTradeRequest
-            request_params = StockLatestTradeRequest(symbol_or_symbols=symbol)
+            request_params = StockLatestTradeRequest(
+                symbol_or_symbols=symbol,
+                feed="iex"
+            )
             latest_trade = self.data_client.get_stock_latest_trade(request_params)
             return float(latest_trade[symbol].price)
         except Exception as e:
@@ -224,6 +227,7 @@ class AlpacaBroker(BaseBroker):
         
         # Map timeframe string to TimeFrame enum
         timeframe_map = {
+            "1S": TimeFrame.Second,
             "1Min": TimeFrame.Minute,
             "5Min": TimeFrame.Hour,  # Use Hour as proxy
             "1H": TimeFrame.Hour,
@@ -238,11 +242,46 @@ class AlpacaBroker(BaseBroker):
             symbol_or_symbols=symbol,
             timeframe=tf,
             start=start_date,
-            end=end_date
+            end=end_date,
+            feed="iex"
         )
         
         bars = self.data_client.get_stock_bars(request_params)
         return bars.df
+    
+    def get_quote(self, symbol: str) -> Optional[Dict[str, float]]:
+        """Holt aktuelle Quote (Bid/Ask) für ein Symbol"""
+        if not self.data_client:
+            raise RuntimeError("Nicht verbunden")
+        
+        try:
+            request_params = StockLatestQuoteRequest(
+                symbol_or_symbols=symbol,
+                feed="iex"
+            )
+            quotes = self.data_client.get_stock_latest_quote(request_params)
+            
+            if symbol in quotes:
+                quote = quotes[symbol]
+                bid = float(quote.bid_price)
+                ask = float(quote.ask_price)
+                spread = ask - bid
+                spread_percent = (spread / ask * 100) if ask > 0 else 0
+                
+                return {
+                    "symbol": symbol,
+                    "bid": bid,
+                    "ask": ask,
+                    "spread": spread,
+                    "spread_percent": spread_percent,
+                    "bid_size": float(quote.bid_size),
+                    "ask_size": float(quote.ask_size),
+                    "timestamp": quote.timestamp
+                }
+            return None
+        except Exception as e:
+            self.logger.error(f"Fehler beim Abrufen der Quote für {symbol}: {e}")
+            return None
     
     def _convert_alpaca_order(self, alpaca_order) -> Order:
         """Konvertiert Alpaca Order zu unserem Order Model"""

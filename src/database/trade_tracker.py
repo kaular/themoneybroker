@@ -35,6 +35,10 @@ def save_trade(
     # Hole order_id (kann .id oder .order_id sein)
     order_id = getattr(order, 'id', None) or getattr(order, 'order_id', None)
     
+    # Konvertiere UUID zu String für SQLite
+    if order_id is not None:
+        order_id = str(order_id)
+    
     trade = Trade(
         order_id=order_id,
         symbol=order.symbol,

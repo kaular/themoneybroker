@@ -251,30 +251,47 @@ async def disconnect_broker():
 
 
 @app.get("/quote/{symbol}")
-async def get_quote(symbol: str):
-    """Holt aktuelle Quote für ein Symbol"""
+async def get_quote_bidask(symbol: str):
+    """Holt aktuelle Bid/Ask Quote für ein Symbol"""
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker nicht verbunden")
+    
+    try:
+        quote = bot_state.broker.get_quote(symbol.upper())
+        if quote:
+            return quote
+        else:
+            raise HTTPException(status_code=404, detail=f"Quote für {symbol} nicht gefunden")
+    except Exception as e:
+        logger.error(f"Error getting quote for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/quote/{symbol}")
+async def get_market_data(symbol: str):
+    """Holt Marktdaten (Preis, Änderung) für ein Symbol"""
     if not bot_state.broker or not bot_state.connected:
         raise HTTPException(status_code=400, detail="Broker nicht verbunden")
     
     try:
         from datetime import datetime, timedelta
         
-        logger.info(f"Fetching quote for {symbol}...")
-        
-        # Hole die letzten 5 Tage Daten (um sicher zu gehen dass wir Daten haben)
+        # Hole die letzten 5 Tage Daten
         end_date = datetime.now()
         start_date = end_date - timedelta(days=5)
         
-        logger.info(f"Requesting historical data: {start_date} to {end_date}")
-        
-        bars = bot_state.broker.get_historical_data(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            timeframe='1D'
-        )
-        
-        logger.info(f"Bars result: {bars is not None}, length: {len(bars) if bars is not None else 0}")
+        try:
+            bars = bot_state.broker.get_historical_data(
+                symbol=symbol.upper(),
+                start_date=start_date,
+                end_date=end_date,
+                timeframe='1D'
+            )
+        except Exception as data_error:
+            logger.warning(
+                f"Historical data not available for {symbol}: {data_error}. Falling back to latest trade."
+            )
+            bars = None
         
         if bars is not None and len(bars) > 0:
             current_bar = bars.iloc[-1]
@@ -290,55 +307,131 @@ async def get_quote(symbol: str):
                 change = 0.0
                 change_percent = 0.0
             
-            logger.info(f"Returning quote: ${current_price}")
             return {
-                "symbol": symbol,
+                "symbol": symbol.upper(),
                 "price": current_price,
                 "change": change,
                 "change_percent": change_percent,
                 "volume": volume
             }
-        else:
-            # Fallback: Versuche aktuellen Marktpreis zu holen
-            logger.info(f"No historical data, trying get_market_price()...")
-            try:
-                price = bot_state.broker.get_market_price(symbol)
-                logger.info(f"Market price: ${price}")
-                return {
-                    "symbol": symbol,
-                    "price": float(price),
-                    "change": 0.0,
-                    "change_percent": 0.0,
-                    "volume": 0
-                }
-            except Exception as e:
-                logger.error(f"No data available for {symbol}: {e}", exc_info=True)
-                raise HTTPException(status_code=404, detail=f"Keine Daten für {symbol} verfügbar")
+        # Fallback: Versuche aktuellen Marktpreis zu holen
+        try:
+            price = bot_state.broker.get_market_price(symbol.upper())
+            return {
+                "symbol": symbol.upper(),
+                "price": float(price),
+                "change": 0.0,
+                "change_percent": 0.0,
+                "volume": 0
+            }
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"Keine Daten für {symbol} verfügbar")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error fetching quote for {symbol}: {e}", exc_info=True)
+        logger.error(f"Error fetching market data for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/market/history/{symbol}")
+async def get_market_history(symbol: str, timeframe: str = "1D", days: int = 90):
+    """Holt historische Kursdaten für Charts"""
+    if not bot_state.broker or not bot_state.connected:
+        raise HTTPException(status_code=400, detail="Broker nicht verbunden")
+    
+    try:
+        from datetime import datetime, timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        bars = bot_state.broker.get_historical_data(
+            symbol=symbol.upper(),
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe
+        )
+
+        if bars is None or len(bars) == 0:
+            raise HTTPException(status_code=404, detail=f"Keine historischen Daten für {symbol}")
+
+        # Normalize dataframe
+        try:
+            df = bars.reset_index()
+        except Exception:
+            df = bars
+
+        records = []
+        for _, row in df.iterrows():
+            timestamp = None
+            if "timestamp" in row:
+                timestamp = row["timestamp"]
+            elif "time" in row:
+                timestamp = row["time"]
+            elif "datetime" in row:
+                timestamp = row["datetime"]
+
+            if hasattr(timestamp, "isoformat"):
+                ts = timestamp.isoformat()
+            else:
+                ts = str(timestamp)
+
+            records.append({
+                "time": ts,
+                "open": float(row.get("open")),
+                "high": float(row.get("high")),
+                "low": float(row.get("low")),
+                "close": float(row.get("close")),
+                "volume": float(row.get("volume")) if "volume" in row else 0
+            })
+
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "days": days,
+            "data": records
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning(f"Error getting quote for {symbol}: {e}")
-        raise HTTPException(status_code=404, detail=f"Symbol {symbol} nicht gefunden")
+        logger.error(f"Error fetching history for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/account")
-async def get_account():
+async def get_account(db: Session = Depends(get_db)):
     """Holt Account-Informationen"""
     if not bot_state.broker or not bot_state.connected:
         raise HTTPException(status_code=400, detail="Broker nicht verbunden")
     
     try:
         account = bot_state.broker.get_account_info()
+        
+        # Berechne realisierten P&L aus der Datenbank (Summe aller Trades mit PnL)
+        realized_pnl = 0.0
+        try:
+            from src.database.models import Trade
+            from sqlalchemy import func
+            
+            # Summiere alle Trades mit PnL (abgeschlossene Positionen)
+            result = db.query(func.sum(Trade.pnl)).filter(
+                Trade.pnl.isnot(None),
+                Trade.status == 'filled'
+            ).scalar()
+            
+            if result:
+                realized_pnl = float(result)
+        except Exception as e:
+            logger.warning(f"Could not calculate realized P&L from database: {e}")
+            # Fallback auf Alpaca-Daten
+            realized_pnl = float(account.realized_pnl)
+        
         return {
             "cash": float(account.cash),
             "portfolio_value": float(account.portfolio_value),
             "buying_power": float(account.buying_power),
             "equity": float(account.equity),
             "unrealized_pnl": float(account.unrealized_pnl),
-            "realized_pnl": float(account.realized_pnl)
+            "realized_pnl": realized_pnl
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
